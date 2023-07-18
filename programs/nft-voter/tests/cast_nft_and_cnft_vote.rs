@@ -66,6 +66,10 @@ async fn test_cast_nft_and_cnft_vote() -> Result<(), TransportError> {
             8
         ).await?;
 
+    let args = CastNftVoteArgs {
+        cast_spl_gov_vote: false,
+    };
+
     nft_voter_test.cast_nft_vote(
         &registrar_cookie,
         &voter_weight_record_cookie,
@@ -74,7 +78,7 @@ async fn test_cast_nft_and_cnft_vote() -> Result<(), TransportError> {
         &voter_cookie,
         &voter_token_owner_record_cookie,
         &[&nft_cookie1],
-        None
+        Some(args)
     ).await?;
 
     let nft_vote_record_cookies = nft_voter_test.cast_cnft_vote(
