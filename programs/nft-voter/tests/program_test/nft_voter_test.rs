@@ -17,16 +17,16 @@ use gpl_nft_voter::state::{
     CollectionConfig,
     NftVoteRecord,
     Registrar,
+    CompressedNftAsset as LeafVerificationCookie,
 };
 
 use solana_program_test::{ BanksClientError, ProgramTest };
 use solana_sdk::instruction::Instruction;
 use solana_sdk::signature::Keypair;
 use solana_sdk::signer::Signer;
-
 use crate::program_test::governance_test::GovernanceTest;
 use crate::program_test::program_test_bench::ProgramTestBench;
-
+use crate::program_test::merkle_tree_test::{ LeafArgs, MerkleTreeTest };
 use crate::program_test::governance_test::{ ProposalCookie, RealmCookie, TokenOwnerRecordCookie };
 use crate::program_test::program_test_bench::WalletCookie;
 use crate::program_test::token_metadata_test::{ NftCollectionCookie, NftCookie, TokenMetadataTest };
@@ -89,6 +89,7 @@ pub struct NftVoterTest {
     pub bench: Arc<ProgramTestBench>,
     pub governance: GovernanceTest,
     pub token_metadata: TokenMetadataTest,
+    pub merkle_tree: MerkleTreeTest,
 }
 
 impl NftVoterTest {
@@ -104,6 +105,7 @@ impl NftVoterTest {
         NftVoterTest::add_program(&mut program_test);
         GovernanceTest::add_program(&mut program_test);
         TokenMetadataTest::add_program(&mut program_test);
+        MerkleTreeTest::add_program(&mut program_test);
 
         let program_id = gpl_nft_voter::id();
 
@@ -116,12 +118,14 @@ impl NftVoterTest {
             Some(program_id)
         );
         let token_metadata_bench = TokenMetadataTest::new(bench_rc.clone());
+        let merkle_tree_bench = MerkleTreeTest::new(bench_rc.clone());
 
         Self {
             program_id,
             bench: bench_rc,
             governance: governance_bench,
             token_metadata: token_metadata_bench,
+            merkle_tree: merkle_tree_bench,
         }
     }
 
@@ -146,7 +150,6 @@ impl NftVoterTest {
         );
 
         let max_collections = 10;
-
         let data = anchor_lang::InstructionData::data(
             &(gpl_nft_voter::instruction::CreateRegistrar {
                 max_collections,
@@ -322,7 +325,7 @@ impl NftVoterTest {
     }
 
     #[allow(dead_code)]
-    pub async fn update_voter_weight_record(
+    pub async fn update_nft_voter_weight_record(
         &self,
         registrar_cookie: &RegistrarCookie,
         voter_weight_record_cookie: &mut VoterWeightRecordCookie,
@@ -354,6 +357,52 @@ impl NftVoterTest {
         }];
 
         self.bench.process_transaction(&instructions, None).await
+    }
+
+    #[allow(dead_code)]
+    pub async fn update_cnft_voter_weight_record(
+        &self,
+        registrar_cookie: &RegistrarCookie,
+        voter_weight_record_cookie: &VoterWeightRecordCookie,
+        voter_weight_action: VoterWeightAction,
+        leaf_cookies: &[&LeafArgs],
+        leaf_verification_cookies: &[&LeafVerificationCookie],
+        proofs: &[&Vec<AccountMeta>]
+    ) -> Result<(), BanksClientError> {
+        let params: Vec<LeafVerificationCookie> = leaf_verification_cookies
+            .to_vec()
+            .into_iter()
+            .map(|v| v.clone())
+            .collect();
+        let data = anchor_lang::InstructionData::data(
+            &(gpl_nft_voter::instruction::UpdateCnftVoterWeightRecord {
+                voter_weight_action: voter_weight_action.into(),
+                params,
+            })
+        );
+
+        let accounts = gpl_nft_voter::accounts::UpdateCnftVoterWeightRecord {
+            registrar: registrar_cookie.address,
+            voter_weight_record: voter_weight_record_cookie.address,
+            leaf_owner: leaf_cookies[0].owner.pubkey(),
+            compression_program: spl_account_compression::id(),
+        };
+
+        let mut update_voter_weight_record_ix = Instruction {
+            program_id: gpl_nft_voter::id(),
+            accounts: anchor_lang::ToAccountMetas::to_account_metas(&accounts, None),
+            data,
+        };
+
+        for i in 0..leaf_verification_cookies.len() {
+            let proof = &mut proofs[i].clone();
+            let tree_account = AccountMeta::new_readonly(leaf_cookies[i].tree_address, false);
+
+            update_voter_weight_record_ix.accounts.push(tree_account);
+            update_voter_weight_record_ix.accounts.append(proof);
+        }
+
+        self.bench.process_transaction(&[update_voter_weight_record_ix], None).await
     }
 
     #[allow(dead_code)]
@@ -570,6 +619,174 @@ impl NftVoterTest {
         self.bench.process_transaction(&instruction, Some(&[&nft_voter_cookie.signer])).await?;
 
         Ok(nft_vote_record_cookies)
+    }
+
+    #[allow(dead_code)]
+    pub async fn with_cnft_verification(
+        &mut self,
+        voter_cookie: &WalletCookie,
+        leaf_cookie: &LeafArgs,
+        leaf_verification_cookie: &LeafVerificationCookie,
+        proofs: &Vec<AccountMeta>
+    ) -> Result<(), BanksClientError> {
+        self.with_cnft_verification_using_ix(
+            voter_cookie,
+            leaf_cookie,
+            leaf_verification_cookie,
+            &proofs,
+            NopOverride,
+            None
+        ).await
+    }
+
+    #[allow(dead_code)]
+    pub async fn with_cnft_verification_using_ix<F: Fn(&mut Instruction)>(
+        &mut self,
+        voter_cookie: &WalletCookie,
+        leaf_cookie: &LeafArgs,
+        leaf_verification_cookie: &LeafVerificationCookie,
+        proofs: &Vec<AccountMeta>,
+        instruction_override: F,
+        signers_override: Option<&[&Keypair]>
+    ) -> Result<(), BanksClientError> {
+        // let tree_authority = &tree_cookie.tree_authority;
+        let proofs = &mut proofs.clone();
+
+        let accounts = gpl_nft_voter::accounts::VerifyCompressedNft {
+            leaf_owner: leaf_cookie.owner.pubkey(),
+            payer: leaf_cookie.owner.pubkey(),
+            compression_program: spl_account_compression::id(),
+        };
+
+        let data = anchor_lang::InstructionData::data(
+            &(gpl_nft_voter::instruction::VerifyCnftMetadata {
+                params: leaf_verification_cookie.clone(),
+            })
+        );
+
+        let mut verify_cnft_info_ix = Instruction {
+            program_id: gpl_nft_voter::id(),
+            accounts: anchor_lang::ToAccountMetas::to_account_metas(&accounts, None),
+            data,
+        };
+
+        let tree_address = leaf_cookie.tree_address;
+        verify_cnft_info_ix.accounts.push(AccountMeta::new_readonly(tree_address, false));
+        verify_cnft_info_ix.accounts.append(proofs);
+
+        instruction_override(&mut verify_cnft_info_ix);
+        let default_signers = &[&leaf_cookie.owner, &leaf_cookie.delegate, &voter_cookie.signer];
+        let signers = signers_override.unwrap_or(default_signers);
+
+        self.bench.process_transaction(&[verify_cnft_info_ix], Some(signers)).await?;
+
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub async fn cast_cnft_vote(
+        &mut self,
+        registrar_cookie: &RegistrarCookie,
+        voter_weight_record_cookie: &VoterWeightRecordCookie,
+        voter_token_owner_record_cookie: &TokenOwnerRecordCookie,
+        max_voter_weight_record_cookie: &MaxVoterWeightRecordCookie,
+        proposal_cookie: &ProposalCookie,
+        voter_cookie: &WalletCookie,
+        leaf_cookies: &[&LeafArgs],
+        leaf_verification_cookies: &[&LeafVerificationCookie],
+        asset_ids: &[&Pubkey],
+        proofs: &[&Vec<AccountMeta>],
+        args: Option<CastNftVoteArgs>
+    ) -> Result<Vec<NftVoteRecordCookie>, BanksClientError> {
+        let args = args.unwrap_or_default();
+        let params: Vec<LeafVerificationCookie> = leaf_verification_cookies
+            .to_vec()
+            .into_iter()
+            .map(|v| v.clone())
+            .collect();
+        let data = anchor_lang::InstructionData::data(
+            &(gpl_nft_voter::instruction::CastCompressedNftVote {
+                proposal: proposal_cookie.address,
+                params: params.to_vec(),
+            })
+        );
+
+        let accounts = gpl_nft_voter::accounts::CastCompressedNftVote {
+            registrar: registrar_cookie.address,
+            voter_weight_record: voter_weight_record_cookie.address,
+            voter_token_owner_record: voter_token_owner_record_cookie.address,
+            voter_authority: voter_cookie.address,
+            leaf_owner: leaf_cookies[0].owner.pubkey(),
+            payer: self.bench.payer.pubkey(),
+            compression_program: spl_account_compression::id(),
+            system_program: solana_sdk::system_program::id(),
+        };
+
+        let mut cast_cnft_vote_ix = Instruction {
+            program_id: gpl_nft_voter::id(),
+            accounts: anchor_lang::ToAccountMetas::to_account_metas(&accounts, None),
+            data,
+        };
+        let mut cnft_vote_record_cookies = vec![];
+
+        for i in 0..leaf_verification_cookies.len() {
+            let cnft_voter_record_key = get_nft_vote_record_address(
+                &proposal_cookie.address,
+                &asset_ids[i]
+            );
+            let cnft_vote_record_info = AccountMeta::new(cnft_voter_record_key, false);
+            let proof = &mut proofs[i].clone();
+            let tree_account = AccountMeta::new_readonly(leaf_cookies[i].tree_address, false);
+
+            cast_cnft_vote_ix.accounts.push(tree_account);
+            cast_cnft_vote_ix.accounts.append(proof);
+            cast_cnft_vote_ix.accounts.push(cnft_vote_record_info);
+
+            let account = NftVoteRecord {
+                proposal: proposal_cookie.address,
+                nft_mint: *asset_ids[i],
+                governing_token_owner: voter_weight_record_cookie.account.governing_token_owner,
+                account_discriminator: NftVoteRecord::ACCOUNT_DISCRIMINATOR,
+                reserved: [0; 8],
+            };
+            cnft_vote_record_cookies.push(NftVoteRecordCookie {
+                address: cnft_voter_record_key,
+                account,
+            });
+        }
+
+        let mut instructions = vec![cast_cnft_vote_ix];
+        if args.cast_spl_gov_vote {
+            // spl-gov cast vote
+            let vote = Vote::Approve(
+                vec![VoteChoice {
+                    rank: 0,
+                    weight_percentage: 100,
+                }]
+            );
+
+            let cast_vote_ix = cast_vote(
+                &self.governance.program_id,
+                &registrar_cookie.account.realm,
+                &proposal_cookie.account.governance,
+                &proposal_cookie.address,
+                &proposal_cookie.account.token_owner_record,
+                &voter_token_owner_record_cookie.address,
+                &voter_cookie.address,
+                &proposal_cookie.account.governing_token_mint,
+                &self.bench.payer.pubkey(),
+                Some(voter_weight_record_cookie.address),
+                Some(max_voter_weight_record_cookie.address),
+                vote
+            );
+
+            instructions.push(cast_vote_ix);
+        }
+
+        let signers = &[&voter_cookie.signer];
+        self.bench.process_transaction(&instructions, Some(signers)).await?;
+
+        Ok(cnft_vote_record_cookies)
     }
 
     #[allow(dead_code)]
