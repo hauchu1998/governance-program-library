@@ -1,9 +1,8 @@
+use std::convert::TryFrom;
 use crate::program_test::nft_voter_test::*;
 use solana_program::pubkey::Pubkey;
 use solana_program_test::*;
 use solana_sdk::transport::TransportError;
-
-mod program_test;
 
 #[tokio::test]
 async fn test_mint_compressed_nft() -> Result<(), TransportError> {

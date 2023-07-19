@@ -1,9 +1,8 @@
 use gpl_nft_voter::{ state::*, error::NftVoterError };
-use program_test::nft_voter_test::*;
+use crate::program_test::nft_voter_test::*;
+use crate::program_test::tools::{ assert_nft_voter_err, assert_compression_err };
 use solana_program_test::*;
 use solana_sdk::transport::TransportError;
-use crate::program_test::tools::{ assert_nft_voter_err, assert_compression_err };
-mod program_test;
 use spl_account_compression::error::AccountCompressionError;
 
 #[tokio::test]

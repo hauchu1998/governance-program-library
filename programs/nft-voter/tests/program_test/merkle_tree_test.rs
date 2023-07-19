@@ -1,3 +1,4 @@
+use std::{ str::FromStr, sync::Arc, convert::TryFrom };
 use crate::program_test::program_test_bench::ProgramTestBench;
 use crate::program_test::tools::clone_keypair;
 use anchor_lang::err;
@@ -17,7 +18,6 @@ use spl_account_compression::{ AccountCompressionError, ConcurrentMerkleTree };
 use spl_merkle_tree_reference::{ MerkleTree, Node };
 use gpl_nft_voter::state::{ Collection, Creator };
 use std::mem::size_of;
-use std::{ str::FromStr, sync::Arc };
 
 pub fn merkle_tree_get_size(max_depth: usize, max_buffer_size: usize) -> Result<usize, Error> {
     // Note: max_buffer_size MUST be a power of 2

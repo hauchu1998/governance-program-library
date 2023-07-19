@@ -1,12 +1,11 @@
 use gpl_nft_voter::{ error::NftVoterError, state::* };
-use program_test::nft_voter_test::*;
+use crate::program_test::nft_voter_test::*;
 use solana_program_test::*;
 use solana_sdk::transport::TransportError;
 use spl_governance::error::GovernanceError;
 use spl_account_compression::error::AccountCompressionError;
 use crate::program_test::tools::{ assert_nft_voter_err, assert_gov_err, assert_compression_err };
 use crate::program_test::merkle_tree_test::MerkleTreeArgs;
-mod program_test;
 
 #[tokio::test]
 pub async fn test_cast_cnft_vote() -> Result<(), TransportError> {
